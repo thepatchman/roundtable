@@ -95,6 +95,10 @@ main{max-width:860px;margin:0 auto;padding:0 18px 80px}
 select,textarea,input[type=password]{font-family:var(--ui);font-size:.9rem;background:var(--room);color:var(--chalk);border:1px solid var(--line);border-radius:3px;padding:8px 10px}
 .qbox{width:100%;margin-top:14px;resize:vertical;font-size:1rem;line-height:1.5;padding:12px}
 .qbox[hidden]{display:none}
+.mode-def{max-width:560px;margin:10px auto 0;text-align:center;color:var(--dim);font-size:.86rem;line-height:1.5}
+#laps-wrap[hidden]{display:none}
+.phase{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--brass);margin:22px 0 2px;padding-top:14px;border-top:1px solid var(--line)}
+.phase:first-child{margin-top:4px;border-top:0;padding-top:0}
 .status{font-family:var(--mono);font-size:10.5px;color:var(--faint);letter-spacing:.05em;text-align:center;margin:12px 0 0;min-height:1.2em}
 .status.live{color:var(--brass)}
 .status.bad{color:var(--bad)}
@@ -159,11 +163,9 @@ footer p{margin:0 0 10px}
   <button class="go" id="begin">Begin</button>
   <button class="tiny" id="pause" disabled>Pause</button>
   <button class="tiny" id="stop" disabled>Stop</button>
-  <span class="field">mode</span>
-  <select id="mode"><option value="relay" selected>Relay</option><option value="blind">Blind</option></select>
-  <span class="field">laps</span>
-  <select id="laps"><option>1</option><option selected>2</option><option>3</option></select>
+  <select id="mode"><option value="relay" selected>Relay</option><option value="blind">Blind</option><option value="second">Second Thoughts</option><option value="redteam">Red Team</option><option value="verdict">Verdict</option></select><span id="laps-wrap"><span class="field">laps</span> <select id="laps"><option>1</option><option selected>2</option><option>3</option></select></span>
 </div>
+<p class="mode-def" id="mode-def"></p>
 <p class="status" id="status"></p>
 
 <div class="interject" id="interject" hidden>
@@ -197,9 +199,6 @@ footer p{margin:0 0 10px}
   var VER_STORE = "roundtable.verifier";
   var $ = function (id) { return document.getElementById(id); };
 
-  /* The six houses. Everything the picker shows is derived from these —
-     a visitor chooses a name they already know, then a model, and never
-     sees an OpenRouter slug unless they go looking. */
   var BRANDS = [
     { id: "anthropic", label: "Claude",   prefix: "anthropic/",  hue: "#D97757" },
     { id: "openai",    label: "ChatGPT",  prefix: "openai/",     hue: "#10A37F" },
@@ -209,6 +208,104 @@ footer p{margin:0 0 10px}
     { id: "meta",      label: "Meta",     prefix: "meta-llama/", hue: "#0866FF" }
   ];
 
+  /* ------------------------------------------------------------------
+     THE MODES
+
+     A mode is not a turn order. It is a set of decisions about what each
+     seat can SEE and what its JOB is — and the job is the part that
+     matters, because five seats given the same job produce five versions
+     of the same paragraph however you shuffle them.
+
+     Each mode compiles the seating into a flat plan of turns. One
+     executor runs any plan, so adding a mode means writing a planner and
+     nothing else.
+
+     sees:  "none" — only the question
+            "all"  — everything said so far
+            "first"— only the opening answer
+            "own"  — only this seat's own earlier turn
+  ------------------------------------------------------------------ */
+
+  var MODES = {
+    relay: {
+      label: "Relay",
+      def: "Each seat reads everything said before it and answers the last speaker by name. Builds one argument in one direction.",
+      usesLaps: true,
+      plan: function (order, laps) {
+        var P = [];
+        for (var lap = 0; lap < laps; lap++) {
+          order.forEach(function (s) {
+            P.push({ seat: s, sees: "all", phase: laps > 1 ? "Lap " + (lap + 1) : "",
+              job: "Answer the question, and engage directly with the last speaker — where you agree, where you do not, and what they missed. Name them." });
+          });
+        }
+        return P;
+      }
+    },
+
+    blind: {
+      label: "Blind",
+      def: "Nobody sees anyone. The same question put to every seat independently, revealed together. The only honest comparison — relay contaminates everyone after the first speaker.",
+      usesLaps: false,
+      plan: function (order) {
+        return order.map(function (s) {
+          return { seat: s, sees: "none", phase: "",
+            job: "Answer the question directly. Nobody else's answer is available to you." };
+        });
+      }
+    },
+
+    second: {
+      label: "Second Thoughts",
+      def: "Everyone answers alone. Then everyone reads the room and may revise. You are watching who moves once they see what the others said — which measures nerve, not knowledge.",
+      usesLaps: false,
+      plan: function (order) {
+        var P = order.map(function (s) {
+          return { seat: s, sees: "none", phase: "Alone",
+            job: "Answer the question directly. Nobody else's answer is available to you." };
+        });
+        order.forEach(function (s) {
+          P.push({ seat: s, sees: "all", phase: "Having read the room",
+            job: "You have now read what everyone else said, including your own first answer. State plainly whether you are changing your position and exactly what changed your mind, or why you are holding it. If nothing moved you, say so and say why the others failed to. Do not simply restate your first answer." });
+        });
+        return P;
+      }
+    },
+
+    redteam: {
+      label: "Red Team",
+      def: "The first seat answers. Every other seat's job is not to answer but to find the single weakest point in that answer. Then the first seat gets a right of reply.",
+      usesLaps: false,
+      plan: function (order) {
+        var first = order[0];
+        var P = [{ seat: first, sees: "none", phase: "The claim",
+          job: "Answer the question directly and commit to a position." }];
+        order.slice(1).forEach(function (s) {
+          P.push({ seat: s, sees: "first", phase: "Attack",
+            job: "Do NOT answer the question. Your only job is to find the single weakest point in the answer above and name it precisely — an unsupported claim, a smuggled assumption, a missing case. One flaw, stated sharply. If the answer is genuinely sound, say which part is load-bearing and what evidence would break it." });
+        });
+        P.push({ seat: first, sees: "all", phase: "Right of reply",
+          job: "You have been criticised by everyone at the table. Concede what actually lands, by name, and defend what does not. Do not be gracious about objections that are wrong." });
+        return P;
+      }
+    },
+
+    verdict: {
+      label: "Verdict",
+      def: "Everyone answers alone, then one seat reads all the answers and reports where they agreed, where exactly one broke ranks, and what none of them would commit to.",
+      usesLaps: false,
+      plan: function (order) {
+        var P = order.map(function (s) {
+          return { seat: s, sees: "none", phase: "Answers",
+            job: "Answer the question directly. Nobody else's answer is available to you." };
+        });
+        P.push({ seat: order[order.length - 1], sees: "all", phase: "Verdict", verdict: true,
+          job: "You are NOT answering the question now. You are reading the answers above and reporting on them. Say three things, briefly and by name: where they all agreed; where exactly one broke from the rest and what it said; and what none of them was willing to commit to. Be specific. Do not be diplomatic — if the agreement is shallow or everyone hedged, say that." });
+        return P;
+      }
+    }
+  };
+
   var S = { key: null, models: [], seats: [null,null,null,null,null],
             transcript: [], running: false, paused: false, stopping: false,
             controller: null, speaking: null, pickingSeat: null };
@@ -216,7 +313,6 @@ footer p{margin:0 0 10px}
   function getKey(){ try { return localStorage.getItem(KEY_STORE); } catch(e){ return null; } }
   function putKey(k){ try { k ? localStorage.setItem(KEY_STORE,k) : localStorage.removeItem(KEY_STORE); } catch(e){} }
 
-  /* ---- PKCE ---- */
   function b64url(bytes){
     var s = "";
     for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
@@ -239,7 +335,7 @@ footer p{margin:0 0 10px}
     var v = null;
     try { v = sessionStorage.getItem(VER_STORE); } catch(e){}
     if (!v) { pasteFallback("That sign-in began in another tab."); return; }
-    say("Signing in...", "live");
+    say("Signing in…", "live");
     fetch(OR + "/auth/keys", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code: code, code_verifier: v, code_challenge_method: "S256" })
@@ -263,7 +359,7 @@ footer p{margin:0 0 10px}
   }
 
   function loadModels(){
-    say("Loading models...", "live");
+    say("Loading models…", "live");
     fetch(OR + "/models", { headers: { Authorization: "Bearer " + S.key } })
       .then(function(r){ if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(function(b){
@@ -275,20 +371,18 @@ footer p{margin:0 0 10px}
       .catch(function(e){ pasteFallback("Signed in, but the model list failed: " + e.message); });
   }
 
-  /* Models of one house, newest first, names cleaned of the vendor prefix. */
   function modelsOf(brand){
     return S.models
       .filter(function(m){ return m.id.indexOf(brand.prefix) === 0; })
       .sort(function(a,b){ return (b.created || 0) - (a.created || 0); })
       .slice(0, 14)
       .map(function(m){
-        var n = m.name || m.id.split("/")[1];
-        var i = n.indexOf(": ");
-        return { id: m.id, name: i >= 0 ? n.slice(i + 2) : n, free: /:free$/.test(m.id) };
+        var nm = m.name || m.id.split("/")[1];
+        var i = nm.indexOf(": ");
+        return { id: m.id, name: i >= 0 ? nm.slice(i + 2) : nm, free: /:free$/.test(m.id) };
       });
   }
 
-  /* Open with one of each of the first four houses that has anything. */
   function seatDefaults(){
     var i = 0;
     for (var b = 0; b < BRANDS.length && i < 4; b++) {
@@ -297,13 +391,12 @@ footer p{margin:0 0 10px}
     }
   }
 
-  /* ---- the picker ---- */
+  /* ---- picker ---- */
   function openPicker(seat){
     S.pickingSeat = seat;
     var taken = S.seats[seat];
     var sheet = $("sheet");
     sheet.innerHTML = "";
-
     var h = document.createElement("h3");
     h.textContent = taken ? taken.name : "Seat " + (seat + 1);
     var hint = document.createElement("p");
@@ -317,10 +410,8 @@ footer p{margin:0 0 10px}
       var list = modelsOf(br);
       var b = document.createElement("button");
       b.className = "brandbtn" + (list.length ? "" : " none");
-      b.type = "button";
-      b.disabled = !list.length;
-      var sw = document.createElement("span");
-      sw.className = "swatch"; sw.style.background = br.hue;
+      b.type = "button"; b.disabled = !list.length;
+      var sw = document.createElement("span"); sw.className = "swatch"; sw.style.background = br.hue;
       var nm = document.createElement("span"); nm.textContent = br.label;
       b.appendChild(sw); b.appendChild(nm);
       b.addEventListener("click", function(){ showModels(br); });
@@ -328,8 +419,7 @@ footer p{margin:0 0 10px}
     });
     sheet.appendChild(grid);
 
-    var foot = document.createElement("div");
-    foot.className = "sheetfoot";
+    var foot = document.createElement("div"); foot.className = "sheetfoot";
     if (taken) {
       var rm = document.createElement("button");
       rm.className = "tiny warn"; rm.type = "button"; rm.textContent = "Empty this seat";
@@ -341,17 +431,14 @@ footer p{margin:0 0 10px}
     cx.addEventListener("click", closePicker);
     foot.appendChild(cx);
     sheet.appendChild(foot);
-
     $("picker").hidden = false;
   }
 
   function showModels(br){
-    var sheet = $("sheet");
-    sheet.innerHTML = "";
+    var sheet = $("sheet"); sheet.innerHTML = "";
     var h = document.createElement("h3"); h.textContent = br.label;
     var hint = document.createElement("p"); hint.className = "hint"; hint.textContent = "which one";
     sheet.appendChild(h); sheet.appendChild(hint);
-
     var wrap = document.createElement("div"); wrap.className = "models";
     modelsOf(br).forEach(function(m){
       var b = document.createElement("button");
@@ -366,7 +453,6 @@ footer p{margin:0 0 10px}
       wrap.appendChild(b);
     });
     sheet.appendChild(wrap);
-
     var foot = document.createElement("div"); foot.className = "sheetfoot";
     var back = document.createElement("button");
     back.className = "tiny"; back.type = "button"; back.textContent = "Back";
@@ -380,13 +466,11 @@ footer p{margin:0 0 10px}
   document.addEventListener("keydown", function(e){ if (e.key === "Escape") closePicker(); });
 
   function pasteFallback(msg){
-    var sheet = $("sheet");
-    sheet.innerHTML = "";
+    var sheet = $("sheet"); sheet.innerHTML = "";
     var h = document.createElement("h3"); h.textContent = "Paste a key";
     var hint = document.createElement("p"); hint.className = "hint"; hint.textContent = msg;
     var inp = document.createElement("input");
-    inp.type = "password"; inp.placeholder = "sk-or-v1-..."; inp.style.width = "100%";
-    inp.autocomplete = "off";
+    inp.type = "password"; inp.placeholder = "sk-or-v1-…"; inp.style.width = "100%"; inp.autocomplete = "off";
     var foot = document.createElement("div"); foot.className = "sheetfoot";
     var use = document.createElement("button");
     use.className = "tiny"; use.type = "button"; use.textContent = "Use this key";
@@ -400,7 +484,7 @@ footer p{margin:0 0 10px}
     say("");
   }
 
-  /* ---- the table ---- */
+  /* ---- table ---- */
   var NS = "http://www.w3.org/2000/svg";
   var T = { cx: 450, cy: 310, rx: 344, ry: 248 }, VW = 900, VH = 620;
   function n(tag, attrs, parent){
@@ -419,25 +503,17 @@ footer p{margin:0 0 10px}
     var y = Math.max(VH*0.12, Math.min(VH*0.88, T.cy + (T.ry+18) * Math.sin(a)));
     return { x: (x/VW)*100, y: (y/VH)*100 };
   }
-
   function seated(){ return S.seats.filter(Boolean); }
 
   function render(){
     var g = $("chairs"); g.innerHTML = "";
 
-    /* The centre is never rebuilt — the question box lives inside it and
-       rebuilding would drop the caret on every keystroke. Only the two
-       blocks and the one line of text under the question change. */
     if (!S.key) {
-      $("connect-block").hidden = false;
-      $("ask-block").hidden = true;
-      $("acct").hidden = true;
-      $("bar").hidden = true;
+      $("connect-block").hidden = false; $("ask-block").hidden = true;
+      $("acct").hidden = true; $("bar").hidden = true;
     } else {
-      $("connect-block").hidden = true;
-      $("ask-block").hidden = false;
-      $("acct").hidden = false;
-      $("acct").textContent = "sign out";
+      $("connect-block").hidden = true; $("ask-block").hidden = false;
+      $("acct").hidden = false; $("acct").textContent = "sign out";
       $("bar").hidden = false;
       var k = seated().length;
       $("seated-line").textContent = k ? k + " seated" : "all seats open";
@@ -448,7 +524,6 @@ footer p{margin:0 0 10px}
         var p = chair(i), who = S.seats[i];
         var grp = n("g", { class: "seat-hit", tabindex: 0, role: "button" }, g);
         grp.setAttribute("aria-label", who ? who.name + ", seat " + (i+1) : "Open seat " + (i+1));
-
         if (!who) {
           n("circle", { cx: p.x, cy: p.y, r: 26, class: "chair-empty" }, grp);
           var lbl = n("text", { x: p.x, y: p.y + 46, "text-anchor": "middle", class: "seat-label" }, grp);
@@ -470,9 +545,8 @@ footer p{margin:0 0 10px}
           var t1 = n("text", { x: p.x, y: p.y+48, "text-anchor": "middle", "font-family": "IBM Plex Mono, monospace", "font-size": 11, "letter-spacing": .8, fill: speaking ? hue : "#7C766A" }, grp);
           t1.textContent = who.brand.label.toUpperCase();
           var t2 = n("text", { x: p.x, y: p.y+62, "text-anchor": "middle", "font-family": "IBM Plex Mono, monospace", "font-size": 9, "letter-spacing": .5, fill: "#5E594E" }, grp);
-          t2.textContent = who.name.length > 20 ? who.name.slice(0,19) + "\u2026" : who.name;
+          t2.textContent = who.name.length > 20 ? who.name.slice(0,19) + "…" : who.name;
         }
-
         function act(){ if (!S.running && S.key) openPicker(i); }
         grp.addEventListener("click", act);
         grp.addEventListener("keydown", function(e){
@@ -483,15 +557,18 @@ footer p{margin:0 0 10px}
     controls();
   }
 
-  /* Grow the question box to fit what is written, so long questions stay
-     centred on the felt instead of scrolling inside a two-line window. */
   function fitQuestion(){
     var q = $("question");
     q.style.height = "auto";
     q.style.height = Math.min(88, q.scrollHeight) + "px";
   }
 
+  function currentMode(){ return MODES[$("mode").value] || MODES.relay; }
+
   function controls(){
+    var m = currentMode();
+    $("mode-def").textContent = m.def;
+    $("laps-wrap").hidden = !m.usesLaps;
     var ready = seated().length >= 2 && $("question").value.trim();
     $("begin").disabled = S.running || !ready;
     $("pause").disabled = !S.running;
@@ -503,7 +580,6 @@ footer p{margin:0 0 10px}
   }
   function say(t, cls){ var e = $("status"); e.textContent = t || ""; e.className = "status" + (cls ? " " + cls : ""); }
 
-  /* ---- bubbles + log ---- */
   function bubble(i, name, text){
     var w = $("bubbles"); w.innerHTML = "";
     var a = anchor(i);
@@ -521,8 +597,15 @@ footer p{margin:0 0 10px}
     var w = $("turns");
     $("log").hidden = !S.transcript.length;
     w.innerHTML = "";
-    var last = null;
+    var last = null, shownPhase = null;
     S.transcript.forEach(function(t){
+      if (t.phase && t.phase !== shownPhase) {
+        shownPhase = t.phase;
+        var ph = document.createElement("p");
+        ph.className = "phase";
+        ph.textContent = t.phase;
+        w.appendChild(ph);
+      }
       var d = document.createElement("div");
       d.className = "turn" + (t.failed ? " failed" : "") + (t.human ? " human" : "");
       var m = document.createElement("div"); m.className = "mark";
@@ -538,28 +621,36 @@ footer p{margin:0 0 10px}
   }
 
   /* ---- the round ---- */
-  function promptFor(i, prior){
-    var me = S.seats[i];
+  function visibleTo(spec){
+    var real = S.transcript.filter(function(t){ return t.text && !t.failed; });
+    if (spec.sees === "none") return [];
+    if (spec.sees === "first") return real.slice(0, 1);
+    if (spec.sees === "own") return real.filter(function(t){ return t.seat === spec.seat; });
+    return real;
+  }
+
+  function promptFor(spec){
+    var me = S.seats[spec.seat];
     var others = seated().filter(function(s){ return s !== me; })
                          .map(function(s){ return s.brand.label; });
+    var prior = visibleTo(spec);
     var L = [];
-    L.push("You are one of several AI models answering the same question at a round table.");
+    L.push("You are one of several AI models at a round table.");
     L.push("");
-    L.push("THE QUESTION:");
+    L.push("THE QUESTION ON THE TABLE:");
     L.push($("question").value.trim());
     L.push("");
     L.push("ALSO AT THIS TABLE: " + (others.join(", ") || "nobody else") + ".");
-    if ($("mode").value === "relay" && prior.length) {
-      L.push(""); L.push("WHAT HAS BEEN SAID, in order:");
-      prior.forEach(function(t){ L.push(t.name + ": " + t.text); });
+    if (prior.length) {
       L.push("");
-      L.push("You speak next. Answer the question, and engage directly with " +
-             prior[prior.length-1].name + " — where you agree, where you do not, and what they missed. Name them.");
-    } else if ($("mode").value === "relay") {
-      L.push(""); L.push("You speak first.");
+      L.push(spec.sees === "first" ? "THE ANSWER YOU ARE EXAMINING:" : "WHAT HAS BEEN SAID, in order:");
+      prior.forEach(function(t){ L.push(t.name + ": " + t.text); });
     }
     L.push("");
-    L.push("Under 120 words. Plain paragraphs, no headings, no bullets.");
+    L.push("YOUR JOB THIS TURN:");
+    L.push(spec.job);
+    L.push("");
+    L.push("Under 130 words. Plain paragraphs, no headings, no bullets.");
     L.push("Do not restate the question. Do not open with your own name.");
     L.push("Have a view and land it. Hedging into 'it depends' wastes the table's time.");
     return L.join("\n");
@@ -612,31 +703,33 @@ footer p{margin:0 0 10px}
   }
 
   function runRound(){
-    var laps = Number($("laps").value) || 2;
+    var mode = currentMode();
+    var laps = mode.usesLaps ? (Number($("laps").value) || 2) : 1;
     var order = [];
     S.seats.forEach(function(s, i){ if (s) order.push(i); });
+    var plan = mode.plan(order, laps);
+
     S.running = true; S.stopping = false; S.paused = false; S.transcript = [];
     drawLog(); render();
 
-    var lap = 0, k = 0;
+    var step = 0;
 
-    function step(){
-      if (S.stopping || lap >= laps) return done();
-      if (k >= order.length) { k = 0; lap++; return step(); }
+    function next(){
+      if (S.stopping || step >= plan.length) return done();
+      if (S.paused) { setTimeout(next, 250); return; }
 
-      if (S.paused) { setTimeout(step, 250); return; }
+      var spec = plan[step];
+      var seat = S.seats[spec.seat];
+      S.speaking = spec.seat; render();
+      say(seat.brand.label + " · " + (spec.phase || mode.label) +
+          " — " + (step + 1) + " of " + plan.length, "live");
 
-      var i = order[k];
-      var seat = S.seats[i];
-      S.speaking = i; render();
-      say(seat.brand.label + " is answering… (lap " + (lap+1) + " of " + laps + ")", "live");
-
-      var bt = bubble(i, seat.brand.label + " · " + seat.name, "thinking…");
-      var entry = { name: seat.brand.label + " · " + seat.name, hue: seat.brand.hue, text: "" };
+      var label = seat.brand.label + " · " + seat.name + (spec.verdict ? " · the verdict" : "");
+      var bt = bubble(spec.seat, label, "thinking…");
+      var entry = { name: label, hue: seat.brand.hue, seat: spec.seat, phase: spec.phase, text: "" };
       var logged = null;
-      var prior = S.transcript.filter(function(t){ return t.text && !t.failed; });
 
-      ask(seat, promptFor(i, prior), function(sofar){
+      ask(seat, promptFor(spec), function(sofar){
         bt.textContent = sofar;
         if (!logged) { entry.text = sofar; S.transcript.push(entry); logged = drawLog(); }
         else { entry.text = sofar; logged.textContent = sofar; }
@@ -644,14 +737,14 @@ footer p{margin:0 0 10px}
         entry.text = text;
         if (!logged) { S.transcript.push(entry); drawLog(); } else { logged.textContent = text; }
         bt.textContent = text;
-        k++; setTimeout(step, 700 + Math.random() * 700);
+        step++; setTimeout(next, 700 + Math.random() * 700);
       }).catch(function(e){
         if (e.name === "AbortError") { clearBubbles(); return done(); }
         entry.text = "(" + seat.brand.label + " did not answer: " + e.message + ")";
         entry.failed = true;
         if (!logged) S.transcript.push(entry);
         drawLog(); clearBubbles();
-        k++; setTimeout(step, 700);
+        step++; setTimeout(next, 700);
       });
     }
 
@@ -660,10 +753,10 @@ footer p{margin:0 0 10px}
       S.running = false; S.paused = false; S.stopping = false;
       S.speaking = null; S.controller = null;
       clearBubbles(); render();
-      say(stopped ? "Stopped." : "Round over · " + S.transcript.length + " turns");
+      say(stopped ? "Stopped." : mode.label + " complete · " + S.transcript.length + " turns");
     }
 
-    step();
+    next();
   }
 
   /* ---- wiring ---- */
@@ -680,19 +773,24 @@ footer p{margin:0 0 10px}
   });
   $("say-it").addEventListener("click", function(){
     var t = $("say").value.trim();
-    if (t) { S.transcript.push({ name: "You", text: t, human: true }); $("say").value = ""; drawLog(); }
+    if (t) { S.transcript.push({ name: "You", text: t, human: true, phase: "" }); $("say").value = ""; drawLog(); }
     S.paused = false; $("pause").textContent = "Pause"; $("interject").hidden = true;
   });
   $("resume").addEventListener("click", function(){
     S.paused = false; $("pause").textContent = "Pause"; $("interject").hidden = true;
   });
   $("question").addEventListener("input", function(){ fitQuestion(); controls(); });
+  $("mode").addEventListener("change", controls);
   $("connect-btn").addEventListener("click", connect);
   $("paste-link").addEventListener("click", function(){ pasteFallback("from openrouter.ai/keys"); });
   $("acct").addEventListener("click", signOut);
   $("copy").addEventListener("click", function(){
-    var t = S.transcript.map(function(x){ return x.name + ":\n" + x.text; }).join("\n\n");
-    navigator.clipboard.writeText("Round Table — " + $("question").value.trim() + "\n\n" + t)
+    var head = "Round Table — " + currentMode().label + "\n" + currentMode().def +
+               "\n\nQ: " + $("question").value.trim() + "\n\n";
+    var body = S.transcript.map(function(x){
+      return (x.phase ? "[" + x.phase + "] " : "") + x.name + ":\n" + x.text;
+    }).join("\n\n");
+    navigator.clipboard.writeText(head + body)
       .then(function(){ $("copy").textContent = "Copied"; setTimeout(function(){ $("copy").textContent = "Copy"; }, 1500); })
       .catch(function(){});
   });
