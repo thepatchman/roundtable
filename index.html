@@ -33,6 +33,12 @@ main{max-width:860px;margin:0 auto;padding:0 18px 80px}
 .centre button{font-family:var(--ui);font-size:0.92rem;font-weight:500;background:var(--brass);color:#1A1508;border:0;border-radius:3px;padding:9px 18px;cursor:pointer}
 .centre button:hover{opacity:0.88}
 
+.centre{pointer-events:auto}
+#connect-block,#ask-block{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;width:100%}
+#question{width:100%;background:transparent;border:0;outline:0;resize:none;overflow:hidden;text-align:center;font-family:var(--display);font-weight:300;font-size:21px;line-height:1.32;color:var(--chalk);padding:0;max-height:88px}
+#question::placeholder{color:#6F6A5E;font-style:italic}
+#question:focus{outline:0}
+.felt-rule{width:54px;height:1px;background:#8A7430;opacity:.45}
 .seat-hit{cursor:pointer}
 .seat-hit:hover .chair-empty{stroke:var(--brass)}
 .seat-hit:focus-visible{outline:2px solid var(--brass);outline-offset:3px}
@@ -139,7 +145,7 @@ footer p{margin:0 0 10px}
     <ellipse cx="450" cy="310" rx="248" ry="148" fill="url(#felt)" stroke="#8A7430" stroke-width="2"/>
     <ellipse cx="450" cy="310" rx="210" ry="118" fill="none" stroke="#8A7430" stroke-width="1" opacity=".4"/>
     <foreignObject x="248" y="244" width="404" height="134">
-      <div xmlns="http://www.w3.org/1999/xhtml" class="centre" id="centre"></div>
+      <div xmlns="http://www.w3.org/1999/xhtml" class="centre" id="centre"><div id="connect-block"><p class="centre-q">Five seats. One question.</p><button type="button" id="connect-btn">Connect OpenRouter</button><p class="centre-sub" id="paste-link" style="cursor:pointer">or paste a key</p></div><div id="ask-block" hidden><textarea id="question" rows="2" placeholder="Ask them something…">Is it rational to be worried about AI agents talking to each other?</textarea><span class="felt-rule"></span><p class="centre-sub" id="seated-line">all seats open</p></div></div>
     </foreignObject>
     <g id="chairs"></g>
   </svg>
@@ -148,8 +154,6 @@ footer p{margin:0 0 10px}
     <div class="sheet" id="sheet"></div>
   </div>
 </div>
-
-<textarea class="qbox" id="question" rows="2" hidden>Is it rational to be worried about AI agents talking to each other?</textarea>
 
 <div class="bar" id="bar" hidden>
   <button class="go" id="begin">Begin</button>
@@ -420,35 +424,23 @@ footer p{margin:0 0 10px}
 
   function render(){
     var g = $("chairs"); g.innerHTML = "";
-    var c = $("centre"); c.innerHTML = "";
 
+    /* The centre is never rebuilt — the question box lives inside it and
+       rebuilding would drop the caret on every keystroke. Only the two
+       blocks and the one line of text under the question change. */
     if (!S.key) {
-      var p = document.createElement("p");
-      p.className = "centre-q"; p.textContent = "Five seats. One question.";
-      var btn = document.createElement("button");
-      btn.type = "button"; btn.textContent = "Connect OpenRouter";
-      btn.addEventListener("click", connect);
-      var alt = document.createElement("p");
-      alt.className = "centre-sub"; alt.style.cursor = "pointer";
-      alt.textContent = "or paste a key";
-      alt.addEventListener("click", function(){ pasteFallback("from openrouter.ai/keys"); });
-      c.appendChild(p); c.appendChild(btn); c.appendChild(alt);
+      $("connect-block").hidden = false;
+      $("ask-block").hidden = true;
       $("acct").hidden = true;
-      $("question").hidden = true; $("bar").hidden = true;
+      $("bar").hidden = true;
     } else {
-      var q = document.createElement("p");
-      var text = $("question").value.trim();
-      q.className = "centre-q" + (text ? "" : " ask");
-      q.textContent = text || "Click to ask something";
-      q.addEventListener("click", function(){ $("question").focus(); });
-      var sub = document.createElement("p");
-      sub.className = "centre-sub";
-      var k = seated().length;
-      sub.textContent = k ? k + (k === 1 ? " seated" : " seated") : "all seats open";
-      c.appendChild(q); c.appendChild(sub);
+      $("connect-block").hidden = true;
+      $("ask-block").hidden = false;
       $("acct").hidden = false;
       $("acct").textContent = "sign out";
-      $("question").hidden = false; $("bar").hidden = false;
+      $("bar").hidden = false;
+      var k = seated().length;
+      $("seated-line").textContent = k ? k + " seated" : "all seats open";
     }
 
     for (var i = 0; i < MAX; i++) {
@@ -478,7 +470,7 @@ footer p{margin:0 0 10px}
           var t1 = n("text", { x: p.x, y: p.y+48, "text-anchor": "middle", "font-family": "IBM Plex Mono, monospace", "font-size": 11, "letter-spacing": .8, fill: speaking ? hue : "#7C766A" }, grp);
           t1.textContent = who.brand.label.toUpperCase();
           var t2 = n("text", { x: p.x, y: p.y+62, "text-anchor": "middle", "font-family": "IBM Plex Mono, monospace", "font-size": 9, "letter-spacing": .5, fill: "#5E594E" }, grp);
-          t2.textContent = who.name.length > 20 ? who.name.slice(0,19) + "…" : who.name;
+          t2.textContent = who.name.length > 20 ? who.name.slice(0,19) + "\u2026" : who.name;
         }
 
         function act(){ if (!S.running && S.key) openPicker(i); }
@@ -489,6 +481,14 @@ footer p{margin:0 0 10px}
       })(i);
     }
     controls();
+  }
+
+  /* Grow the question box to fit what is written, so long questions stay
+     centred on the felt instead of scrolling inside a two-line window. */
+  function fitQuestion(){
+    var q = $("question");
+    q.style.height = "auto";
+    q.style.height = Math.min(88, q.scrollHeight) + "px";
   }
 
   function controls(){
@@ -686,7 +686,9 @@ footer p{margin:0 0 10px}
   $("resume").addEventListener("click", function(){
     S.paused = false; $("pause").textContent = "Pause"; $("interject").hidden = true;
   });
-  $("question").addEventListener("input", render);
+  $("question").addEventListener("input", function(){ fitQuestion(); controls(); });
+  $("connect-btn").addEventListener("click", connect);
+  $("paste-link").addEventListener("click", function(){ pasteFallback("from openrouter.ai/keys"); });
   $("acct").addEventListener("click", signOut);
   $("copy").addEventListener("click", function(){
     var t = S.transcript.map(function(x){ return x.name + ":\n" + x.text; }).join("\n\n");
@@ -697,6 +699,7 @@ footer p{margin:0 0 10px}
   $("clear").addEventListener("click", function(){ S.transcript = []; drawLog(); say(""); });
 
   /* ---- boot ---- */
+  fitQuestion();
   var code = new URLSearchParams(location.search).get("code");
   if (code) { render(); finish(code); }
   else {
